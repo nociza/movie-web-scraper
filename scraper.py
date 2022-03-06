@@ -242,7 +242,7 @@ for i in df['movieInfo']:
     
 driver.close()
 
-df_douban = pd.DataFrame.from_records(infoLst)
+df_douban = pd.DataFrame.from_records(jsonLst)
 df_douban.to_csv("logs/" + now + "/douban_data_raw.csv", encoding='utf_8_sig')
 
 def parsePeopleLst(lst):
