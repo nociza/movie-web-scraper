@@ -1,6 +1,9 @@
 import os
 import re
 import requests
+import simplejson as json
+import pytesseract
+import pandas as pd
 from bs4 import BeautifulSoup as bs
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -9,15 +12,10 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
-import simplejson as json
+from git import Repo
 from datetime import datetime
 from fontTools.ttLib import TTFont
 from PIL import ImageFont, Image, ImageDraw, ImageOps
-import pytesseract
-import cv2
-import numpy as np
-import random
-import pandas as pd
 
 browserOptions = Options()
 
@@ -34,7 +32,24 @@ while not test:
     try:
         test = wait.until(EC.presence_of_element_located((By.CLASS_NAME, 'moviename-td')))
     except:
-        driver.refresh();
+        if "暂无网络" in driver.page_source:
+            driver.close()
+            now = datetime.now().strftime("%d-%m-%Y_%H:%M:%S")
+            os.mkdir("logs/" + now)
+            with open("logs/" + now + "/Maoyan_Website_Down", 'wb') as f:
+                f.write("Maoyan down at" + now)
+                f.close()
+            sys.exit()
+        elif len(driver.find_elements_by_id("tcaptcha_transform")) > 0:
+            driver.close()
+            now = datetime.now().strftime("%d-%m-%Y_%H:%M:%S")
+            os.mkdir("logs/" + now)
+            with open("logs/" + now + "/Maoyan_Captcha_Wall", 'wb') as f:
+                f.write("Maoyan captcha wall reached at " + now)
+                f.close()
+            sys.exit()
+        else:
+            driver.refresh()
 
 now = datetime.now().strftime("%d-%m-%Y_%H:%M:%S") # get exact datetime at the time of scrape
 os.mkdir("logs/" + now)
@@ -79,7 +94,6 @@ with open('temp/fonts.woff', 'wb') as f:
     f.write(response_woff)
     
 
-
 def uniToHex(uni):
     return "&#x" + uni[3:].lower()
 
@@ -97,14 +111,6 @@ def uni_2_png_stream(txt: str, font: str, img_size=512, font_size=0.7, invert=Fa
         img = img.convert('1')
     #img.save(txt + '.png')
     return img 
-
-def predict_neural(unicode, fontFile):
-    image = uni_2_png_stream(int(unicode[3:], 16), fontFile, img_size=28, font_size=0.5, invert=True)
-    image.save(str(unicodeToInt[unicode]) + '_neuro.png')
-    matrix_form = np.array(image)
-    weighted_predictions = np.ndarray.flatten(neural_network.run(matrix_form))
-    most_possible = np.argmax(weighted_predictions)
-    return most_possible
 
 def predict_tesseract(unicode, fontFile, fontSize=0.5):
     image = uni_2_png_stream(int(unicode[3:], 16), fontFile, img_size=1024, font_size=fontSize)
@@ -273,3 +279,15 @@ df_combined['url'] = df_douban['url']
 df_combined['doubanDataRaw'] = soupLst
 
 df_combined.to_csv("logs/" + now + "/combined.csv", encoding='utf_8_sig')
+
+PATH_OF_GIT_REPO = r'.git'  # make sure .git folder is properly configured
+COMMIT_MESSAGE = "update with data from " + now
+
+def git_push():
+    repo = Repo(PATH_OF_GIT_REPO)
+    repo.git.add(update=True)
+    repo.index.commit(COMMIT_MESSAGE)
+    origin = repo.remote(name='remote')
+    origin.push()   
+
+git_push()
