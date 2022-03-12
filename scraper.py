@@ -2,6 +2,10 @@ import os
 import re
 import requests
 import pandas as pd
+import pytesseract
+import simplejson as json
+import numpy as np
+import warnings
 from bs4 import BeautifulSoup as bs
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -11,8 +15,11 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.proxy import Proxy, ProxyType
+from fontTools.ttLib import TTFont
+from PIL import ImageFont, Image, ImageDraw, ImageOps
 from datetime import datetime
-import warnings
+from git import Repo
+
 warnings.filterwarnings('ignore')
 
 # ------------------------------------------------ 猫眼 ---------------------------------------------------
@@ -22,7 +29,8 @@ browserOptions.add_argument('--ignore-certificate-errors')
 
 res = ''
 if not res:
-    res = json.loads(requests.get('https://www.proxyscan.io/api/proxy?type=https').text)
+    res = json.loads(requests.get(
+        'https://www.proxyscan.io/api/proxy?type=https').text)
 prox = Proxy()
 prox.proxy_type = ProxyType.MANUAL
 prox.http_proxy = str(res[0]['Ip']) + ":" + str(res[0]['Port'])
@@ -31,25 +39,30 @@ capa = DesiredCapabilities.CHROME
 capa["pageLoadStrategy"] = "none"
 capa["goog:loggingPrefs"] = {"performance": "ALL"}
 prox.add_to_capabilities(capa)
-driver = webdriver.Chrome(desired_capabilities=capa, chrome_options=browserOptions)
+driver = webdriver.Chrome(desired_capabilities=capa,
+                          chrome_options=browserOptions)
 wait = WebDriverWait(driver, 60)
 
-#create snapshot of the entire page to prevent it from constantly changing
+# create snapshot of the entire page to prevent it from constantly changing
 driver.get("https://piaofang.maoyan.com/dashboard/movie")
 test = None
 while not test:
     try:
-        test = wait.until(EC.presence_of_element_located((By.CLASS_NAME, 'moviename-td')))
+        test = wait.until(EC.presence_of_element_located(
+            (By.CLASS_NAME, 'moviename-td')))
     except:
-        driver.refresh();
+        driver.refresh()
 
-now = datetime.now().strftime("%d-%m-%Y_%H:%M:%S") # get exact datetime at the time of scrape
+# get exact datetime at the time of scrape
+now = datetime.now().strftime("%d-%m-%Y_%H:%M:%S")
 os.mkdir("logs/" + now)
 
-driver.get_screenshot_as_file("logs/" + now + "/screenshot.png") # save screenshot to sanity check later
+# save screenshot to sanity check later
+driver.get_screenshot_as_file("logs/" + now + "/screenshot.png")
 
 logs_raw = driver.get_log("performance")
 logs = [json.loads(lr["message"])["message"] for lr in logs_raw]
+
 
 def log_filter(log_):
     return (
@@ -59,17 +72,18 @@ def log_filter(log_):
         and "json" in log_["params"]["response"]["mimeType"]
     )
 
+
 responses = []
 
 for log in filter(log_filter, logs):
     request_id = log["params"]["requestId"]
     resp_url = log["params"]["response"]["url"]
     print(f"Caught {resp_url}")
-    response = driver.execute_cdp_cmd("Network.getResponseBody", {"requestId": request_id})
+    response = driver.execute_cdp_cmd(
+        "Network.getResponseBody", {"requestId": request_id})
     responses.append(response)
-    
-    
-    
+
+
 # Get this instance's font file from backend server
 body0 = json.loads(responses[0]['body'])
 movieList = body0['movieList']['list']
@@ -77,11 +91,10 @@ date = body0['calendar']['today']
 font_url = body0['fontStyle'].split('"')[-2]
 
 # Get reference fonts from the file tree
-from fontTools.ttLib import TTFont
 headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_13_4) AppleWebKit/537.36 (KHTML, like Gecko) "
-              "Chrome/66.0.3359.139 Safari/537.36 "
-    }
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_13_4) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/66.0.3359.139 Safari/537.36 "
+}
 
 woff_url = 'http:' + font_url
 response_woff = requests.get(woff_url, headers=headers).content
@@ -90,49 +103,50 @@ print("Woff retrieval succuessful: " + str(len(response_woff) > 0))
 
 with open('temp/fonts.woff', 'wb') as f:
     f.write(response_woff)
-    
-    
-driver.close() # we don't need the driver anymore from this point forward
 
 
-from fontTools.ttLib import TTFont
-from PIL import ImageFont, Image, ImageDraw, ImageOps
-import pytesseract
-import cv2
-import numpy as np
-import random
+driver.close()  # we don't need the driver anymore from this point forward
+
 
 def uniToHex(uni):
     return "&#x" + uni[3:].lower()
 
+
 def uni_2_png_stream(txt: str, font: str, img_size=512, font_size=0.7, invert=False):
-    img = Image.new('1', (img_size, img_size), 255) 
+    img = Image.new('1', (img_size, img_size), 255)
     draw = ImageDraw.Draw(img)
     font = ImageFont.truetype(font, int(img_size * font_size))
-    
+
     txt = chr(txt)
-    x, y = draw.textsize(txt, font=font) 
-    draw.text(((img_size - x) // 2, (img_size - y) // 2), txt, font=font, fill=0)
+    x, y = draw.textsize(txt, font=font)
+    draw.text(((img_size - x) // 2, (img_size - y) // 2),
+              txt, font=font, fill=0)
     if invert:
         img = img.convert('L')
         img = ImageOps.invert(img)
         img = img.convert('1')
     #img.save(txt + '.png')
-    return img 
+    return img
+
 
 def predict_neural(unicode, fontFile):
-    image = uni_2_png_stream(int(unicode[3:], 16), fontFile, img_size=28, font_size=0.5, invert=True)
+    image = uni_2_png_stream(
+        int(unicode[3:], 16), fontFile, img_size=28, font_size=0.5, invert=True)
     image.save(str(unicodeToInt[unicode]) + '_neuro.png')
     matrix_form = np.array(image)
     weighted_predictions = np.ndarray.flatten(neural_network.run(matrix_form))
     most_possible = np.argmax(weighted_predictions)
     return most_possible
 
+
 def predict_tesseract(unicode, fontFile, fontSize=0.5):
-    image = uni_2_png_stream(int(unicode[3:], 16), fontFile, img_size=1024, font_size=fontSize)
+    image = uni_2_png_stream(
+        int(unicode[3:], 16), fontFile, img_size=1024, font_size=fontSize)
     image.save('logs/' + str(now) + '/' + str(unicode) + '.png')
-    text = pytesseract.image_to_string(image, lang="eng", config="--psm 10 outputbase digits -c tessedit_char_whitelist=0123456789")
+    text = pytesseract.image_to_string(
+        image, lang="eng", config="--psm 10 outputbase digits -c tessedit_char_whitelist=0123456789")
     return text
+
 
 def predict_tesseract_definite(unicode, fontFile):
     result, size = '', 1
@@ -149,51 +163,59 @@ hexToInt = {}
 for x in f.getGlyphNames()[1:-1]:
     predict = predict_tesseract_definite(x, filename)
     hexToInt[uniToHex(x)] = int(predict)
-    
+
 print("Predictions: ")
 print(hexToInt)
-    
+
 df = pd.DataFrame.from_records(movieList)
 
 unitLookup = {'百': 100, '千': 1000, '万': 10000, '亿': 1*10**8}
 
-#converts the weird character to a float
+# converts the weird character to a float
+
+
 def convertToFloat(string):
     spCharLst = string.split(';')
     result = ''
     for i in spCharLst:
-        if len(i) > 7: #has a dot in front
+        if len(i) > 7:  # has a dot in front
             result += '.' + str(hexToInt[i[1:]])
-        elif len(i) == 7: #in case of bad parsing
+        elif len(i) == 7:  # in case of bad parsing
             result += str(hexToInt[i])
     return float(result)
 
-#helper function for converting the entire block to a single int
+# helper function for converting the entire block to a single int
+
+
 def convertDictToInt(dictionary):
     return int(convertToFloat(dictionary['num']) * unitLookup[dictionary['unit']])
 
+
 df['boxSplitUnit'] = df['boxSplitUnit'].apply(convertDictToInt)
 df['splitBoxSplitUnit'] = df['splitBoxSplitUnit'].apply(convertDictToInt)
-df['movieInfo'] = df['movieInfo'].apply(lambda x : x['movieName'])
+df['movieInfo'] = df['movieInfo'].apply(lambda x: x['movieName'])
 df.to_csv("logs/" + now + "/maoyan_data.csv", encoding='utf_8_sig')
 
 
-#大盘
+# 大盘
 dapan = pd.DataFrame.from_records(body0['movieList']['nationBoxInfo'])
-dapan['nationBoxSplitUnit'][0] = convertDictToInt(body0['movieList']['nationBoxInfo']['nationBoxSplitUnit'])
-dapan['nationSplitBoxSplitUnit'][0] = convertDictToInt(body0['movieList']['nationBoxInfo']['nationSplitBoxSplitUnit'])
+dapan['nationBoxSplitUnit'][0] = convertDictToInt(
+    body0['movieList']['nationBoxInfo']['nationBoxSplitUnit'])
+dapan['nationSplitBoxSplitUnit'][0] = convertDictToInt(
+    body0['movieList']['nationBoxInfo']['nationSplitBoxSplitUnit'])
 dapan.drop(labels=['unit'], axis=0, inplace=True)
 dapan.to_csv("logs/" + now + "/dapan.csv", encoding='utf_8_sig')
 
 
 # -------------------------------------------------- 豆瓣 -------------------------------------------------
 browserOptions = Options()
-#browserOptions.add_argument("--headless")
+# browserOptions.add_argument("--headless")
 
 capa = DesiredCapabilities.CHROME
 capa["pageLoadStrategy"] = "none"
 capa["goog:loggingPrefs"] = {"performance": "ALL"}
-driver = webdriver.Chrome(desired_capabilities=capa, chrome_options=browserOptions)
+driver = webdriver.Chrome(desired_capabilities=capa,
+                          chrome_options=browserOptions)
 wait = WebDriverWait(driver, 20)
 
 driver.get("https://movie.douban.com/")
@@ -201,18 +223,20 @@ driver.get("https://movie.douban.com/")
 test = None
 while not test:
     try:
-        test = wait.until(EC.presence_of_element_located((By.CLASS_NAME, 'nav')))
+        test = wait.until(
+            EC.presence_of_element_located((By.CLASS_NAME, 'nav')))
     except:
         pass
-        #driver.refresh();
+        # driver.refresh();
 
-jsonLst = []    
+jsonLst = []
 soupLst = []
 percent1star, percent2star, percent3star, percent4star, percent5star = [], [], [], [], []
 betterThan = []
 shortReview, reviewRating, helpful, totalReviews = [], [], [], []
 imdb = []
 playSource = []
+
 
 def search(name):
     inputElement = driver.find_element_by_id('inp-query')
@@ -224,84 +248,96 @@ def search(name):
     res = requests.get(driver.current_url, headers=headers)
     soup = bs(res.text, 'lxml')
     soupLst.append(soup)
-    
+
     if len(soup.select('span[class^="rating_per"]')) == 5:
         for i, x in enumerate(soup.select('span[class^="rating_per"]')):
             try:
                 globals()['percent' + str(i + 1) + 'star'].append(x.text)
             except:
                 globals()['percent' + str(i + 1) + 'star'].append(None)
-    else: 
+    else:
         for i in range(1, 6):
             globals()['percent' + str(i) + 'star'].append(None)
-            
-            
+
     try:
-        playSource.append([x.text.strip() for x in soup.select('a[class^="playBtn"]')])
+        playSource.append([x.text.strip()
+                          for x in soup.select('a[class^="playBtn"]')])
     except:
         playSource.append([])
-            
+
     try:
-        betterThan.append([x.text for x in soup.select('a[href^="/typerank?type_name="]')])
-    except: 
+        betterThan.append([x.text for x in soup.select(
+            'a[href^="/typerank?type_name="]')])
+    except:
         betterThan.append([])
-        
-    try: 
-        shortReview.append([x.text for x in soup.select('span[class^="short"]')])
-    except: 
+
+    try:
+        shortReview.append(
+            [x.text for x in soup.select('span[class^="short"]')])
+    except:
         shortReview.append([])
-        
+
     try:
-        reviewRating.append([x.text for x in soup.select('span[class^="votes vote-count"]')])
-    except: 
+        reviewRating.append(
+            [x.text for x in soup.select('span[class^="votes vote-count"]')])
+    except:
         reviewRating.append([])
-        
+
     try:
-        helpful.append([x['class'][0][-2:-1] for x in soup.select('span[class$="0 rating"]')])
+        helpful.append([x['class'][0][-2:-1]
+                       for x in soup.select('span[class$="0 rating"]')])
     except:
         helpful.append([])
-    
+
     try:
-        totalReviews.append(soup.select_one('a[href$="comments?status=P"]').text.strip())
+        totalReviews.append(soup.select_one(
+            'a[href$="comments?status=P"]').text.strip())
     except:
         totalReviews.append(None)
-    
+
     try:
-        imdb.append(re.search('IMDb:</span>(.*)<br/>', str(soup.select_one('div[id^="info"]')), re.IGNORECASE).group(1).strip())
+        imdb.append(re.search('IMDb:</span>(.*)<br/>',
+                    str(soup.select_one('div[id^="info"]')), re.IGNORECASE).group(1).strip())
     except:
         imdb.append(None)
-        
-    sj = json.loads(soup.select_one('script[type^="application/ld+json"]').text, strict=False)
+
+    sj = json.loads(soup.select_one(
+        'script[type^="application/ld+json"]').text, strict=False)
     jsonLst.append(sj)
+
 
 for i in df['movieInfo']:
     search(i)
-    
-driver.close()    
-    
+
+driver.close()
+
 df_douban = pd.DataFrame.from_records(jsonLst)
 df_douban.to_csv("logs/" + now + "/douban_data_raw.csv", encoding='utf_8_sig')
 
 
 def parsePeopleLst(lst):
     result = []
-    for i in lst: 
+    for i in lst:
         result.append(i['name'])
     return result
 
+
 def parseRatingLst(lst):
     return (lst['ratingValue'], lst['ratingCount'], lst['bestRating'], lst['worstRating'])
+
 
 df_combined = df
 df_combined['imdb'] = imdb
 df_combined['duration'] = df_douban['duration']
 df_combined['datePublished'] = df_douban['datePublished']
 df_combined['genre'] = df_douban['genre']
-df_combined['ratingValue'], df_combined['ratingCount'], df_combined['bestRating'], df_combined['worstRating'] = zip(*df_douban['aggregateRating'].apply(parseRatingLst))
+df_combined['ratingValue'], df_combined['ratingCount'], df_combined['bestRating'], df_combined['worstRating'] = zip(
+    *df_douban['aggregateRating'].apply(parseRatingLst))
 
 for i in range(1, 6):
-    df_combined['ratingPercentage' + str(i) + 'Star'] = globals()['percent' + str(i) + 'star']
-    
+    df_combined['ratingPercentage' +
+                str(i) + 'Star'] = globals()['percent' + str(i) + 'star']
+
 df_combined['betterThan'] = betterThan
 df_combined['shortReview'], df_combined['reviewRating'], df_combined['helpful'], df_combined['totalReviews'] = shortReview, reviewRating, helpful, totalReviews
 
@@ -318,13 +354,14 @@ df_combined.to_csv("logs/" + now + "/combined.csv", encoding='utf_8_sig')
 
 PATH_OF_GIT_REPO = r'.git'
 
-from git import Repo
+
 def git_push():
     repo = Repo(PATH_OF_GIT_REPO)
     repo.git.add(update=True)
     repo.index.commit("automated run at: " + str(now))
     origin = repo.remote(name='remote')
-    origin.push()   
+    origin.push()
+
 
 git_push()
 
