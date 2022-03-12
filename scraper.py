@@ -1,8 +1,6 @@
 import os
 import re
 import requests
-import simplejson as json
-import pytesseract
 import pandas as pd
 from bs4 import BeautifulSoup as bs
 from selenium import webdriver
@@ -12,18 +10,29 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
-from git import Repo
+from selenium.webdriver.common.proxy import Proxy, ProxyType
 from datetime import datetime
-from fontTools.ttLib import TTFont
-from PIL import ImageFont, Image, ImageDraw, ImageOps
+import warnings
+warnings.filterwarnings('ignore')
 
+# ------------------------------------------------ 猫眼 ---------------------------------------------------
 browserOptions = Options()
+browserOptions.add_argument('--ignore-ssl-errors=yes')
+browserOptions.add_argument('--ignore-certificate-errors')
+
+res = ''
+if not res:
+    res = json.loads(requests.get('https://www.proxyscan.io/api/proxy?type=https').text)
+prox = Proxy()
+prox.proxy_type = ProxyType.MANUAL
+prox.http_proxy = str(res[0]['Ip']) + ":" + str(res[0]['Port'])
 
 capa = DesiredCapabilities.CHROME
 capa["pageLoadStrategy"] = "none"
 capa["goog:loggingPrefs"] = {"performance": "ALL"}
+prox.add_to_capabilities(capa)
 driver = webdriver.Chrome(desired_capabilities=capa, chrome_options=browserOptions)
-wait = WebDriverWait(driver, 20)
+wait = WebDriverWait(driver, 60)
 
 #create snapshot of the entire page to prevent it from constantly changing
 driver.get("https://piaofang.maoyan.com/dashboard/movie")
@@ -32,27 +41,12 @@ while not test:
     try:
         test = wait.until(EC.presence_of_element_located((By.CLASS_NAME, 'moviename-td')))
     except:
-        if "暂无网络" in driver.page_source:
-            driver.close()
-            now = datetime.now().strftime("%d-%m-%Y_%H:%M:%S")
-            os.mkdir("logs/" + now)
-            with open("logs/" + now + "/Maoyan_Website_Down", 'wb') as f:
-                f.write("Maoyan down at" + now)
-                f.close()
-            sys.exit()
-        elif len(driver.find_elements_by_id("tcaptcha_transform")) > 0:
-            driver.close()
-            now = datetime.now().strftime("%d-%m-%Y_%H:%M:%S")
-            os.mkdir("logs/" + now)
-            with open("logs/" + now + "/Maoyan_Captcha_Wall", 'wb') as f:
-                f.write("Maoyan captcha wall reached at " + now)
-                f.close()
-            sys.exit()
-        else:
-            driver.refresh()
+        driver.refresh();
 
 now = datetime.now().strftime("%d-%m-%Y_%H:%M:%S") # get exact datetime at the time of scrape
 os.mkdir("logs/" + now)
+
+driver.get_screenshot_as_file("logs/" + now + "/screenshot.png") # save screenshot to sanity check later
 
 logs_raw = driver.get_log("performance")
 logs = [json.loads(lr["message"])["message"] for lr in logs_raw]
@@ -70,10 +64,11 @@ responses = []
 for log in filter(log_filter, logs):
     request_id = log["params"]["requestId"]
     resp_url = log["params"]["response"]["url"]
+    print(f"Caught {resp_url}")
     response = driver.execute_cdp_cmd("Network.getResponseBody", {"requestId": request_id})
     responses.append(response)
-
-driver.close()
+    
+    
     
 # Get this instance's font file from backend server
 body0 = json.loads(responses[0]['body'])
@@ -82,6 +77,7 @@ date = body0['calendar']['today']
 font_url = body0['fontStyle'].split('"')[-2]
 
 # Get reference fonts from the file tree
+from fontTools.ttLib import TTFont
 headers = {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_13_4) AppleWebKit/537.36 (KHTML, like Gecko) "
               "Chrome/66.0.3359.139 Safari/537.36 "
@@ -90,9 +86,21 @@ headers = {
 woff_url = 'http:' + font_url
 response_woff = requests.get(woff_url, headers=headers).content
 
+print("Woff retrieval succuessful: " + str(len(response_woff) > 0))
+
 with open('temp/fonts.woff', 'wb') as f:
     f.write(response_woff)
     
+    
+driver.close() # we don't need the driver anymore from this point forward
+
+
+from fontTools.ttLib import TTFont
+from PIL import ImageFont, Image, ImageDraw, ImageOps
+import pytesseract
+import cv2
+import numpy as np
+import random
 
 def uniToHex(uni):
     return "&#x" + uni[3:].lower()
@@ -112,6 +120,14 @@ def uni_2_png_stream(txt: str, font: str, img_size=512, font_size=0.7, invert=Fa
     #img.save(txt + '.png')
     return img 
 
+def predict_neural(unicode, fontFile):
+    image = uni_2_png_stream(int(unicode[3:], 16), fontFile, img_size=28, font_size=0.5, invert=True)
+    image.save(str(unicodeToInt[unicode]) + '_neuro.png')
+    matrix_form = np.array(image)
+    weighted_predictions = np.ndarray.flatten(neural_network.run(matrix_form))
+    most_possible = np.argmax(weighted_predictions)
+    return most_possible
+
 def predict_tesseract(unicode, fontFile, fontSize=0.5):
     image = uni_2_png_stream(int(unicode[3:], 16), fontFile, img_size=1024, font_size=fontSize)
     image.save('logs/' + str(now) + '/' + str(unicode) + '.png')
@@ -125,6 +141,7 @@ def predict_tesseract_definite(unicode, fontFile):
         size -= 0.01
     return result
 
+
 # Map contours to numbers - the prediction phase may be very slow
 filename = 'temp/fonts.woff'
 f = TTFont(filename)
@@ -133,7 +150,11 @@ for x in f.getGlyphNames()[1:-1]:
     predict = predict_tesseract_definite(x, filename)
     hexToInt[uniToHex(x)] = int(predict)
     
+print("Predictions: ")
+print(hexToInt)
+    
 df = pd.DataFrame.from_records(movieList)
+
 unitLookup = {'百': 100, '千': 1000, '万': 10000, '亿': 1*10**8}
 
 #converts the weird character to a float
@@ -156,6 +177,7 @@ df['splitBoxSplitUnit'] = df['splitBoxSplitUnit'].apply(convertDictToInt)
 df['movieInfo'] = df['movieInfo'].apply(lambda x : x['movieName'])
 df.to_csv("logs/" + now + "/maoyan_data.csv", encoding='utf_8_sig')
 
+
 #大盘
 dapan = pd.DataFrame.from_records(body0['movieList']['nationBoxInfo'])
 dapan['nationBoxSplitUnit'][0] = convertDictToInt(body0['movieList']['nationBoxInfo']['nationBoxSplitUnit'])
@@ -163,9 +185,17 @@ dapan['nationSplitBoxSplitUnit'][0] = convertDictToInt(body0['movieList']['natio
 dapan.drop(labels=['unit'], axis=0, inplace=True)
 dapan.to_csv("logs/" + now + "/dapan.csv", encoding='utf_8_sig')
 
-#豆瓣
+
+# -------------------------------------------------- 豆瓣 -------------------------------------------------
+browserOptions = Options()
+#browserOptions.add_argument("--headless")
+
+capa = DesiredCapabilities.CHROME
+capa["pageLoadStrategy"] = "none"
+capa["goog:loggingPrefs"] = {"performance": "ALL"}
 driver = webdriver.Chrome(desired_capabilities=capa, chrome_options=browserOptions)
 wait = WebDriverWait(driver, 20)
+
 driver.get("https://movie.douban.com/")
 
 test = None
@@ -174,6 +204,7 @@ while not test:
         test = wait.until(EC.presence_of_element_located((By.CLASS_NAME, 'nav')))
     except:
         pass
+        #driver.refresh();
 
 jsonLst = []    
 soupLst = []
@@ -246,10 +277,11 @@ def search(name):
 for i in df['movieInfo']:
     search(i)
     
-driver.close()
-
+driver.close()    
+    
 df_douban = pd.DataFrame.from_records(jsonLst)
 df_douban.to_csv("logs/" + now + "/douban_data_raw.csv", encoding='utf_8_sig')
+
 
 def parsePeopleLst(lst):
     result = []
@@ -257,11 +289,15 @@ def parsePeopleLst(lst):
         result.append(i['name'])
     return result
 
+def parseRatingLst(lst):
+    return (lst['ratingValue'], lst['ratingCount'], lst['bestRating'], lst['worstRating'])
+
 df_combined = df
 df_combined['imdb'] = imdb
 df_combined['duration'] = df_douban['duration']
 df_combined['datePublished'] = df_douban['datePublished']
 df_combined['genre'] = df_douban['genre']
+df_combined['ratingValue'], df_combined['ratingCount'], df_combined['bestRating'], df_combined['worstRating'] = zip(*df_douban['aggregateRating'].apply(parseRatingLst))
 
 for i in range(1, 6):
     df_combined['ratingPercentage' + str(i) + 'Star'] = globals()['percent' + str(i) + 'star']
@@ -280,14 +316,16 @@ df_combined['doubanDataRaw'] = soupLst
 
 df_combined.to_csv("logs/" + now + "/combined.csv", encoding='utf_8_sig')
 
-PATH_OF_GIT_REPO = r'.git'  # make sure .git folder is properly configured
-COMMIT_MESSAGE = "update with data from " + now
+PATH_OF_GIT_REPO = r'.git'
 
+from git import Repo
 def git_push():
     repo = Repo(PATH_OF_GIT_REPO)
     repo.git.add(update=True)
-    repo.index.commit(COMMIT_MESSAGE)
+    repo.index.commit("automated run at: " + str(now))
     origin = repo.remote(name='remote')
     origin.push()   
 
 git_push()
+
+print("Job Sucessful at Timestamp: " + str(now))
